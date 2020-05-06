@@ -1,31 +1,20 @@
-// Copyright 2020-05-05
-// pingA - Advanced network diagnostic tool
+// Copyright 2020-05-06
+// pingA - Advanced network diagnostic tool with MQTT support
 //
-// Mikhail Kalinin / mx10@mail.ru
-// Arthur Levitan / 1@levitan.su
-
-// Build options
-//
-// For Linux and Mac
-// ! Disable windowsSupport
-// env GOOS=linux GOARCH=amd64 go build
-// env GOOS=darwin GOARCH=amd64 go build
-//
-// For Windows
-// ! Enable windowsSupport
-// env GOOS=windows GOARCH=amd64 go build
-//
-// see all compilation options https://habr.com/ru/post/249449/
+// Mikhail Kalinin mx10@mail.ru
+// Arthur Levitan https://www.levitan.su/
 
 package main
 
 import (
+	"bufio"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	userinfo "os/user"
 	"reflect"
@@ -41,12 +30,13 @@ import (
 
 const (
 	appName    string = "pingA"                                       // Application Name
-	appVersion string = "0.0.4"                                       // Application Version
+	appVersion string = "0.1.0"                                       // Application Version
 	welcomeMsg string = "The application is running. Please, wait..." // Start Message
 	//
 	// Default Options
 	maxProcs       int    = 1           // How many PC Cores to use
 	logFileName    string = "pinga.log" // Name of Log File
+	logLimit       int    = 10          // Number of recent log entries
 	windowsSupport bool   = false       // Windows Support (true for Windows, false - Linux, Mac and etc)
 	//
 	// Ping Options
@@ -62,20 +52,16 @@ const (
 	topicPrefix     string = "pingA/"  // Prefix for MQTT Topic Name
 	defaultUserID   string = "unknown" // Default Unique ID of the client device
 	defaultSourceID string = "unknown" // Default Unique ID of the client device
-	// Errors
-	connectionLost string = "Internet connection lost!"     // Message
-	pleaseWait     string = "Reconnecting. Please, wait..." // Message
+	// Messages
+	connectionOk   string = "Internet connection restored"  // Success Message
+	connectionLost string = "Internet connection lost"      // Error Message
+	pleaseWait     string = "Reconnecting. Please, wait..." // Error Message
 )
 
 var (
-	logger *log.Logger
+	logger       *log.Logger
+	isConnection bool = true // Internet connection status
 )
-
-// timeFormat - To format all dates
-func timeFormat(t time.Time) string {
-	timeString := t.Format("2006/01/02 - 15:04:05")
-	return timeString
-}
 
 // GenerateSHA1Hash - sha1-hash
 // @return 40 character string
@@ -107,6 +93,36 @@ func itemExists(slice interface{}, item interface{}) bool {
 // durationToString - time.Duration to string
 func durationToString(t time.Duration) string {
 	return fmt.Sprintf("%.3f", float32(float32(t)/float32(time.Millisecond)))
+}
+
+// readLog - Read Logger
+// lines int - Number of recent entries
+func readLog(lines int) []string {
+	if lines == 0 {
+		return []string{}
+	}
+	// Else
+	f, _ := os.Open(logFileName)
+	defer f.Close()
+	fileScanner := bufio.NewScanner(f)
+	fileScanner.Split(bufio.ScanLines)
+	var ss []string
+	for fileScanner.Scan() {
+		ss = append(ss, fileScanner.Text())
+	}
+
+	// Log Revers
+	last := len(ss) - 1
+	for i := 0; i < len(ss)/2; i++ {
+		ss[i], ss[last-i] = ss[last-i], ss[i]
+	}
+
+	// Check Log Length
+	if lines > len(ss) {
+		lines = len(ss)
+	}
+	lss := ss[:lines]
+	return lss
 }
 
 // getExternalIP - client external IP
@@ -146,24 +162,29 @@ func pinger(addr string, n int) *ping.Statistics {
 }
 
 // Recovery - middleware recovers from any panics and write log
-func Recovery(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt string, p string, user string, pass string) {
+func Recovery(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt string, p string, user string, pass string, log int) {
 	if err := recover(); err != nil {
-		// fmt.Println("Recovery")
+		fmt.Println(connectionLost)
+		fmt.Println(pleaseWait)
+		fmt.Println()
+		// Write to Log
+		if isConnection {
+			logger.Println(connectionLost)
+		}
+		isConnection = false
 	}
-	// Catch Errors
-	fmt.Println(connectionLost)
-	fmt.Println(pleaseWait)
-	fmt.Println()
+
 	// Delay
 	time.Sleep(disconnectionDelay * time.Second)
+
 	// Recover
-	pingA(mqttOpts, ipAddresses, n, mqtt, p, user, pass)
+	pingA(mqttOpts, ipAddresses, n, mqtt, p, user, pass, log)
 }
 
 // pingA - main function that performs the main tasks of the application
-func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt string, p string, user string, pass string) {
+func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt string, p string, user string, pass string, log int) {
 	// Panic Recover
-	defer Recovery(mqttOpts, ipAddresses, n, mqtt, p, user, pass)
+	defer Recovery(mqttOpts, ipAddresses, n, mqtt, p, user, pass, log)
 
 	// Get Data
 	//
@@ -196,16 +217,16 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 		// Ping Results
 		pingResult := pinger(ipAddresses[i], n)
 
-		ipAddr := fmt.Sprintf("%s", pingResult.IPAddr)           // IPAddr is the address of the host being pinged.
-		packetsSent := pingResult.PacketsSent                    // PacketsSent is the number of packets sent
-		packetsRecv := pingResult.PacketsRecv                    // PacketsRecv is the number of packets received
-		rtts := pingResult.Rtts                                  // Rtts is all of the round-trip times sent via this pinger
-		minRtt := durationToString(pingResult.MinRtt)            // MinRtt is the minimum round-trip time sent via this pinger
-		maxRtt := durationToString(pingResult.MaxRtt)            // MaxRtt is the maximum round-trip time sent via this pinger
-		avgRtt := durationToString(pingResult.AvgRtt)            // AvgRtt is the average round-trip time sent via this pinger
-		stdDevRtt := durationToString(pingResult.StdDevRtt)      // StdDevRtt is the standard deviation of the round-trip times sent via this pinger
-		packetLoss := fmt.Sprintf("%.1f", pingResult.PacketLoss) // PacketLoss is the percentage of packets lost
-		jitter := pingResult.MaxRtt - pingResult.MinRtt          // Jitter is the deviation from true periodicity of a presumably periodic signal
+		ipAddr := fmt.Sprintf("%s", pingResult.IPAddr)                     // IPAddr is the address of the host being pinged.
+		packetsSent := pingResult.PacketsSent                              // PacketsSent is the number of packets sent
+		packetsRecv := pingResult.PacketsRecv                              // PacketsRecv is the number of packets received
+		rtts := pingResult.Rtts                                            // Rtts is all of the round-trip times sent via this pinger
+		minRtt := durationToString(pingResult.MinRtt)                      // MinRtt is the minimum round-trip time sent via this pinger
+		maxRtt := durationToString(pingResult.MaxRtt)                      // MaxRtt is the maximum round-trip time sent via this pinger
+		avgRtt := durationToString(pingResult.AvgRtt)                      // AvgRtt is the average round-trip time sent via this pinger
+		stdDevRtt := durationToString(pingResult.StdDevRtt)                // StdDevRtt is the standard deviation of the round-trip times sent via this pinger
+		packetLoss := fmt.Sprintf("%.1f", math.Abs(pingResult.PacketLoss)) // PacketLoss is the percentage of packets lost
+		jitter := pingResult.MaxRtt - pingResult.MinRtt                    // Jitter is the deviation from true periodicity of a presumably periodic signal
 
 		// Publish to console
 		fmt.Println(fmt.Sprintf("--- PING %s (%s) statistics ---", ipAddresses[i], ipAddr))
@@ -226,8 +247,7 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 			// Create MQTT Client
 			client := MQTT.NewClient(mqttOpts)
 			if token = client.Connect(); token.Wait() && token.Error() != nil {
-				fmt.Println(token.Error())
-				//logger.Println(connectionMQTTLost, mqttAddrAttr)
+				// fmt.Println(token.Error())
 			}
 
 			// Prepare Topics
@@ -238,6 +258,7 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 			topicRtts := topic + "rtts"
 			topicPacketLoss := topic + "packet_loss"
 			topicJitter := topic + "jitter"
+			topicLog := topicPrefix + user + "/log"
 
 			// Publish
 			token = client.Publish(topicUserID, byte(qos), false, userID)
@@ -252,20 +273,31 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 			fmt.Println(topicJitter, jitter)
 			fmt.Println(fmt.Sprintf("Information was successfully sent to the MQTT topic: %s", topic))
 			fmt.Println()
+			// Sending Log
+			lss := readLog(log)
+			for ls := range lss {
+				token = client.Publish(topicLog, byte(qos), false, lss[ls])
+			}
+			//
 			token.Wait()
 			client.Disconnect(250)
 		}
 		// After Ping Results
+		// Write to Log
+		if isConnection == false {
+			logger.Println(connectionOk)
+		}
+		isConnection = true
+		// Delay
 		time.Sleep(connectionDelayByHost * time.Second)
 	}
-
 }
 
 func main() {
 	// How many PC cores to use
 	runtime.GOMAXPROCS(maxProcs)
 
-	// Init Error Logger
+	// Init Logger
 	f, err := os.OpenFile(logFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Println("Could not initialize Logger")
@@ -287,6 +319,7 @@ func main() {
 	var p string    // MQTT Port
 	var user string // User Name & MQTT Login authentication
 	var pass string // MQTT Password authentication
+	var log int     // Number of ICMP Echo Requests to send
 
 	flag.StringVar(&ip, "ip", "", "List of IP addresses (separate by comma if multiple values: host1.com,host2.com)")
 	flag.IntVar(&n, "n", defaulPingRequests, "Number of ICMP Echo Requests to send")
@@ -294,6 +327,7 @@ func main() {
 	flag.StringVar(&p, "p", "1883", "MQTT Port")
 	flag.StringVar(&user, "user", "", "User Name & MQTT Login authentication")
 	flag.StringVar(&pass, "pass", "", "MQTT Password authentication")
+	flag.IntVar(&log, "log", 0, "The number of recent log entries")
 	flag.Parse()
 
 	// Parse Console Flags
@@ -307,6 +341,11 @@ func main() {
 	// Limit Number of ICMP Echo Requests to send
 	if n > maxPingRequests {
 		n = defaulPingRequests
+	}
+
+	// Limit Number of recent log entries
+	if log > logLimit {
+		log = logLimit
 	}
 
 	// Choosing a place to publish data
@@ -327,5 +366,5 @@ func main() {
 	}
 
 	// Start pingA
-	pingA(mqttOpts, ipAddresses, n, mqtt, p, user, pass)
+	pingA(mqttOpts, ipAddresses, n, mqtt, p, user, pass, log)
 }
