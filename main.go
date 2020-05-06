@@ -1,5 +1,6 @@
 // Copyright 2020-05-06
 // pingA - Advanced network diagnostic tool with MQTT support
+// https://github.com/artlevitan/pingA
 //
 // Mikhail Kalinin mx10@mail.ru
 // Arthur Levitan https://www.levitan.su/
