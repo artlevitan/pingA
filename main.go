@@ -1,5 +1,5 @@
 // Copyright 2020-05-06
-// pingA - Advanced network diagnostic tool with MQTT support
+// pingA - Advanced network diagnostic tool for Golang with MQTT support.
 // https://github.com/artlevitan/pingA
 //
 // Mikhail Kalinin mx10@mail.ru
@@ -25,28 +25,32 @@ import (
 
 	"github.com/denisbrodbeck/machineid"
 	MQTT "github.com/eclipse/paho.mqtt.golang"
+	"github.com/fatih/color"
 	externalip "github.com/glendc/go-external-ip"
 	"github.com/sparrc/go-ping"
+	"gopkg.in/ini.v1"
 )
 
 const (
 	appName    string = "pingA"                                       // Application Name
-	appVersion string = "0.1.0"                                       // Application Version
+	appVersion string = "0.1.1"                                       // Application Version
 	welcomeMsg string = "The application is running. Please, wait..." // Start Message
+	appLink    string = "https://github.com/artlevitan/pingA"         // Home URL
 	//
 	// Default Options
-	maxProcs       int    = 1           // How many PC Cores to use
-	logFileName    string = "pinga.log" // Name of Log File
-	logLimit       int    = 10          // Number of recent log entries
-	windowsSupport bool   = false       // Windows Support (true for Windows, false - Linux, Mac and etc)
+	maxProcs       int    = 1            // How many PC Cores to use
+	configFileName string = "config.ini" // Name of Config File
+	logFileName    string = "pinga.log"  // Name of Log File
+	logLimit       int    = 10           // Number of recent log entries
+	windowsSupport bool   = false        // Windows Support (true for Windows, false - Linux, Mac)
 	//
 	// Ping Options
 	defaulPingRequests          int           = 4  // Default Number of ICMP Echo Requests to send
 	maxPingRequests             int           = 16 // Max Number of ICMP Echo Requests to send
-	disconnectionDelay          time.Duration = 5  // [seconds] Delay when communication loss
+	disConnectedDelay           time.Duration = 5  // [seconds] Delay when communication loss
 	connectionTimeoutExternalIP time.Duration = 5  // [seconds] The Time during which the client tries to get its external IP address
 	connectionTimeoutPinger     time.Duration = 5  // [seconds] The Time during which the attempt to send ICMP
-	connectionDelayByHost       time.Duration = 1  // [seconds] Delay between connections in hosts
+	connectionDelayByHost       time.Duration = 5  // [seconds] Delay between connections in hosts
 	//
 	// MQTT Options
 	qos             int    = 0         // Quality of Service (QoS) in MQTT messaging
@@ -54,27 +58,29 @@ const (
 	defaultUserID   string = "unknown" // Default Unique ID of the client device
 	defaultSourceID string = "unknown" // Default Unique ID of the client device
 	// Messages
-	connectionOk   string = "Internet connection restored"  // Success Message
-	connectionLost string = "Internet connection lost"      // Error Message
-	pleaseWait     string = "Reconnecting. Please, wait..." // Error Message
+	loggerInitError string = "Could not initialize Logger"                                                           // Error Message
+	configFound     string = "Found configuration file.\nConnection will be made with the settings from the config." // Success Message
+	connectionOk    string = "Successful Internet connection"                                                        // Success Message
+	connectionLost  string = "Lost Internet connection"                                                              // Error Message
+	pleaseWait      string = "Reconnecting. Please, wait..."                                                         // Error Message
 )
 
 var (
-	logger       *log.Logger
-	isConnection bool = true // Internet connection status
+	logger      *log.Logger
+	isConnected bool = true // Internet connection status
 )
 
-// GenerateSHA1Hash - sha1-hash
+// generateSHA1Hash - sha1-hash
 // @return 40 character string
-func GenerateSHA1Hash(text string) string {
+func generateSHA1Hash(text string) string {
 	hasher := sha1.New()
 	hasher.Write([]byte(text))
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-// GenerateSHA256Hash - sha256-hash
+// generateSHA256Hash - sha256-hash
 // @return 64 character string
-func GenerateSHA256Hash(text string) string {
+func generateSHA256Hash(text string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(text))
 	return hex.EncodeToString(hasher.Sum(nil))
@@ -111,13 +117,11 @@ func readLog(lines int) []string {
 	for fileScanner.Scan() {
 		ss = append(ss, fileScanner.Text())
 	}
-
 	// Log Revers
 	last := len(ss) - 1
 	for i := 0; i < len(ss)/2; i++ {
 		ss[i], ss[last-i] = ss[last-i], ss[i]
 	}
-
 	// Check Log Length
 	if lines > len(ss) {
 		lines = len(ss)
@@ -149,7 +153,8 @@ func getExternalIP() (string, error) {
 func pinger(addr string, n int) *ping.Statistics {
 	pinger, err := ping.NewPinger(addr)
 	if err != nil {
-		// fmt.Println(err.Error())
+		// Panic to throw Connection Error
+		panic(err.Error())
 	}
 	// Timeout
 	pinger.Timeout = time.Duration(n) * connectionTimeoutPinger * time.Second
@@ -162,21 +167,22 @@ func pinger(addr string, n int) *ping.Statistics {
 	return stats
 }
 
-// Recovery - middleware recovers from any panics and write log
-func Recovery(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt string, p string, user string, pass string, log int) {
+// recovery - middleware recovers from any panics and write log
+func recovery(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt string, p string, user string, pass string, log int) {
 	if err := recover(); err != nil {
-		fmt.Println(connectionLost)
+		warningColor := color.New(color.FgWhite, color.BgRed)
+		warningColor.Println(connectionLost)
 		fmt.Println(pleaseWait)
 		fmt.Println()
 		// Write to Log
-		if isConnection {
+		if isConnected {
 			logger.Println(connectionLost)
 		}
-		isConnection = false
+		isConnected = false
 	}
 
 	// Delay
-	time.Sleep(disconnectionDelay * time.Second)
+	time.Sleep(disConnectedDelay * time.Second)
 
 	// Recover
 	pingA(mqttOpts, ipAddresses, n, mqtt, p, user, pass, log)
@@ -185,7 +191,7 @@ func Recovery(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt st
 // pingA - main function that performs the main tasks of the application
 func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt string, p string, user string, pass string, log int) {
 	// Panic Recover
-	defer Recovery(mqttOpts, ipAddresses, n, mqtt, p, user, pass, log)
+	defer recovery(mqttOpts, ipAddresses, n, mqtt, p, user, pass, log)
 
 	// Get Data
 	//
@@ -202,7 +208,7 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 	if err != nil {
 		userID = defaultUserID
 	} else {
-		userID = GenerateSHA1Hash(currentUser.Username)
+		userID = generateSHA1Hash(currentUser.Username)
 	}
 
 	// Unique ID of the client device
@@ -211,7 +217,7 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 	if err != nil {
 		sourceID = defaultSourceID
 	} else {
-		sourceID = GenerateSHA1Hash(sourceID)
+		sourceID = generateSHA1Hash(sourceID)
 	}
 
 	for i := range ipAddresses {
@@ -227,16 +233,16 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 		avgRtt := durationToString(pingResult.AvgRtt)                      // AvgRtt is the average round-trip time sent via this pinger
 		stdDevRtt := durationToString(pingResult.StdDevRtt)                // StdDevRtt is the standard deviation of the round-trip times sent via this pinger
 		packetLoss := fmt.Sprintf("%.1f", math.Abs(pingResult.PacketLoss)) // PacketLoss is the percentage of packets lost
-		jitter := pingResult.MaxRtt - pingResult.MinRtt                    // Jitter is the deviation from true periodicity of a presumably periodic signal
+		jitter := durationToString(pingResult.MaxRtt - pingResult.MinRtt)  // Jitter is the deviation from true periodicity of a presumably periodic signal
 
 		// Publish to console
-		fmt.Println(fmt.Sprintf("--- PING %s (%s) statistics ---", ipAddresses[i], ipAddr))
+		color.Cyan(fmt.Sprintf("--- PING %s (%s) statistics ---", ipAddresses[i], ipAddr))
 		// rtts
 		for i := range rtts {
 			rtt := durationToString(rtts[i])
 			fmt.Println(fmt.Sprintf("rtts: icmp_seq=%d time=%v ms", i+1, rtt))
 		}
-		fmt.Println(fmt.Sprintf("%d packets transmitted, %d packets received, %v%% packet loss, %v Jitter", packetsSent, packetsRecv, packetLoss, jitter))
+		fmt.Println(fmt.Sprintf("%d packets transmitted, %d packets received, %v%% packet loss, %v ms Jitter", packetsSent, packetsRecv, packetLoss, jitter))
 		fmt.Println(fmt.Sprintf("round-trip min/avg/max/stddev = %v/%v/%v/%v ms", minRtt, avgRtt, maxRtt, stdDevRtt))
 		fmt.Println()
 		// End publish to console
@@ -248,7 +254,8 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 			// Create MQTT Client
 			client := MQTT.NewClient(mqttOpts)
 			if token = client.Connect(); token.Wait() && token.Error() != nil {
-				// fmt.Println(token.Error())
+				// Panic to throw Connection Error
+				panic(token.Error())
 			}
 
 			// Prepare Topics
@@ -259,7 +266,7 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 			topicRtts := topic + "rtts"
 			topicPacketLoss := topic + "packet_loss"
 			topicJitter := topic + "jitter"
-			topicLog := topicPrefix + user + "/log"
+			topicLog := topicPrefix + "log/" + user + "/"
 
 			// Publish
 			token = client.Publish(topicUserID, byte(qos), false, userID)
@@ -271,8 +278,7 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 			}
 			token = client.Publish(topicPacketLoss, byte(qos), false, packetLoss)
 			token = client.Publish(topicJitter, byte(qos), false, jitter)
-			fmt.Println(topicJitter, jitter)
-			fmt.Println(fmt.Sprintf("Information was successfully sent to the MQTT topic: %s", topic))
+			color.Green("Information was successfully sent to the MQTT topic: %s", topic)
 			fmt.Println()
 			// Sending Log
 			lss := readLog(log)
@@ -285,10 +291,14 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 		}
 		// After Ping Results
 		// Write to Log
-		if isConnection == false {
+		if isConnected == false {
 			logger.Println(connectionOk)
+			//
+			successColor := color.New(color.FgWhite, color.BgGreen)
+			successColor.Println(connectionOk)
+			fmt.Println()
 		}
-		isConnection = true
+		isConnected = true
 		// Delay
 		time.Sleep(connectionDelayByHost * time.Second)
 	}
@@ -301,7 +311,7 @@ func main() {
 	// Init Logger
 	f, err := os.OpenFile(logFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Println("Could not initialize Logger")
+		color.Red(loggerInitError)
 		fmt.Println(err.Error())
 		os.Exit(1)
 	}
@@ -309,7 +319,7 @@ func main() {
 	logger = log.New(f, "", log.LstdFlags)
 
 	// Welcome Message
-	fmt.Println(fmt.Sprintf("%s [v%s]", appName, appVersion))
+	fmt.Println(fmt.Sprintf("%s [v%s]\n%s", appName, appVersion, appLink))
 	fmt.Println(welcomeMsg)
 	fmt.Println()
 
@@ -322,6 +332,7 @@ func main() {
 	var pass string // MQTT Password authentication
 	var log int     // Number of ICMP Echo Requests to send
 
+	// Read Console Flags
 	flag.StringVar(&ip, "ip", "", "List of IP addresses (separate by comma if multiple values: host1.com,host2.com)")
 	flag.IntVar(&n, "n", defaulPingRequests, "Number of ICMP Echo Requests to send")
 	flag.StringVar(&mqtt, "mqtt", "", "MQTT Server")
@@ -331,7 +342,20 @@ func main() {
 	flag.IntVar(&log, "log", 0, "The number of recent log entries")
 	flag.Parse()
 
-	// Parse Console Flags
+	// Read Config
+	cfg, isCfg := ini.Load(configFileName)
+	if isCfg == nil {
+		color.Yellow(configFound)
+		fmt.Println()
+		//
+		ip = cfg.Section("").Key("ip").String()
+		n, _ = cfg.Section("").Key("n").Int()
+		mqtt = cfg.Section("").Key("mqtt").String()
+		p = cfg.Section("").Key("p").String()
+		user = cfg.Section("").Key("user").String()
+		pass = cfg.Section("").Key("pass").String()
+		log, _ = cfg.Section("").Key("log").Int()
+	}
 
 	// IP addresses
 	var ipAddresses []string
@@ -355,7 +379,7 @@ func main() {
 		// MQTT
 		//
 		// Generate unique ClientID
-		clientID := user + "-" + GenerateSHA1Hash(fmt.Sprintf("%v", time.Now().Format(time.StampNano)))
+		clientID := user + "-" + generateSHA1Hash(fmt.Sprintf("%v", time.Now().Format(time.StampNano)))
 		//
 		// Connection Options
 		mqttOpts = MQTT.NewClientOptions()

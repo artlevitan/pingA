@@ -1,33 +1,34 @@
 # pingA
-
-Advanced network diagnostic tool with MQTT support.
+Advanced network diagnostic tool for Golang with MQTT support.
 
 ## Installation
+Packages-dependencies for self-compilation:
 
 ```bash
 go get github.com/denisbrodbeck/machineid
 go get github.com/eclipse/paho.mqtt.golang
 go get github.com/glendc/go-external-ip
 go get github.com/sparrc/go-ping
+go get github.com/fatih/color
+go get gopkg.in/ini.v1
 ```
 
 ## Usage
-
-```golang
- -ip string
-        List of IP addresses (separate by comma if multiple values: host1.com,host2.com)
-  -log int
-        The number of recent log entries
-  -mqtt string
-        MQTT Server
-  -n int
-        Number of ICMP Echo Requests to send (default 4)
-  -p string
-        MQTT Port (default "1883")
-  -pass string
-        MQTT Password authentication
-  -user string
-        User Name & MQTT Login authentication
+```terminal
+-ip string
+    List of IP addresses (separate by comma if multiple values: host1.com,host2.com)
+-log int
+    The number of recent log entries
+-mqtt string
+    MQTT Server
+-n int
+    Number of ICMP Echo Requests to send (default 4)
+-p string
+    MQTT Port (default "1883")
+-pass string
+    MQTT Password authentication
+-user string
+    User Name & MQTT Login authentication
 ```
 
 ## Build options
@@ -35,20 +36,25 @@ go get github.com/sparrc/go-ping
 ```golang
 windowsSupport bool = false
 ```
+
 ```bash
 env GOOS=linux GOARCH=amd64 go build
 ```
+
 ### Mac
 ```golang
 windowsSupport bool = false
 ```
+
 ```bash
 env GOOS=darwin GOARCH=amd64 go build
 ```
+
 ### For Windows
 ```golang
 windowsSupport bool = true
 ```
+
 ```bash
 env GOOS=windows GOARCH=amd64 go build
 ```

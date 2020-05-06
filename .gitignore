@@ -15,4 +15,5 @@
 # vendor/
 
 # Etc
+*.log
 .DS_Store
