@@ -1,18 +1,6 @@
 # pingA
 Advanced network diagnostic tool for Golang with MQTT support.
 
-## Installation
-Packages-dependencies for self-compilation:
-
-```bash
-go get github.com/denisbrodbeck/machineid
-go get github.com/eclipse/paho.mqtt.golang
-go get github.com/glendc/go-external-ip
-go get github.com/sparrc/go-ping
-go get github.com/fatih/color
-go get gopkg.in/ini.v1
-```
-
 ## Usage
 ```terminal
 -ip string
