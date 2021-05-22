@@ -1,4 +1,4 @@
-// Copyright 2020-05-06
+// Copyright 2020-2021
 // pingA - Advanced network diagnostic tool for Golang with MQTT support.
 // https://github.com/artlevitan/pingA
 //
@@ -10,7 +10,6 @@ package main
 import (
 	"bufio"
 	"crypto/sha1"
-	"crypto/sha256"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -27,13 +26,13 @@ import (
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"github.com/fatih/color"
 	externalip "github.com/glendc/go-external-ip"
-	"github.com/sparrc/go-ping"
+	"github.com/go-ping/ping"
 	"gopkg.in/ini.v1"
 )
 
 const (
 	appName    string = "pingA"                                       // Application Name
-	appVersion string = "0.1.1"                                       // Application Version
+	appVersion string = "0.2.0"                                       // Application Version
 	welcomeMsg string = "The application is running. Please, wait..." // Start Message
 	appLink    string = "https://github.com/artlevitan/pingA"         // Home URL
 	//
@@ -74,14 +73,6 @@ var (
 // @return 40 character string
 func generateSHA1Hash(text string) string {
 	hasher := sha1.New()
-	hasher.Write([]byte(text))
-	return hex.EncodeToString(hasher.Sum(nil))
-}
-
-// generateSHA256Hash - sha256-hash
-// @return 64 character string
-func generateSHA256Hash(text string) string {
-	hasher := sha256.New()
 	hasher.Write([]byte(text))
 	return hex.EncodeToString(hasher.Sum(nil))
 }
@@ -224,7 +215,7 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 		// Ping Results
 		pingResult := pinger(ipAddresses[i], n)
 
-		ipAddr := fmt.Sprintf("%s", pingResult.IPAddr)                     // IPAddr is the address of the host being pinged.
+		ipAddr := pingResult.IPAddr.IP.String()                            // IPAddr is the address of the host being pinged.
 		packetsSent := pingResult.PacketsSent                              // PacketsSent is the number of packets sent
 		packetsRecv := pingResult.PacketsRecv                              // PacketsRecv is the number of packets received
 		rtts := pingResult.Rtts                                            // Rtts is all of the round-trip times sent via this pinger
@@ -240,10 +231,10 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 		// rtts
 		for i := range rtts {
 			rtt := durationToString(rtts[i])
-			fmt.Println(fmt.Sprintf("rtts: icmp_seq=%d time=%v ms", i+1, rtt))
+			fmt.Printf("rtts: icmp_seq=%d time=%v ms\n", i+1, rtt)
 		}
-		fmt.Println(fmt.Sprintf("%d packets transmitted, %d packets received, %v%% packet loss, %v ms Jitter", packetsSent, packetsRecv, packetLoss, jitter))
-		fmt.Println(fmt.Sprintf("round-trip min/avg/max/stddev = %v/%v/%v/%v ms", minRtt, avgRtt, maxRtt, stdDevRtt))
+		fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss, %v ms Jitter\n", packetsSent, packetsRecv, packetLoss, jitter)
+		fmt.Printf("round-trip min/avg/max/stddev = %v/%v/%v/%v ms\n", minRtt, avgRtt, maxRtt, stdDevRtt)
 		fmt.Println()
 		// End publish to console
 
@@ -269,21 +260,21 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 			topicLog := topicPrefix + "log/" + user + "/"
 
 			// Publish
-			token = client.Publish(topicUserID, byte(qos), false, userID)
-			token = client.Publish(topicSourceID, byte(qos), false, sourceID)
-			token = client.Publish(topicSourceIP, byte(qos), false, clientIP)
+			client.Publish(topicUserID, byte(qos), false, userID)
+			client.Publish(topicSourceID, byte(qos), false, sourceID)
+			client.Publish(topicSourceIP, byte(qos), false, clientIP)
 			for j := range rtts {
 				rtt := durationToString(rtts[j])
-				token = client.Publish(topicRtts, byte(qos), false, rtt)
+				client.Publish(topicRtts, byte(qos), false, rtt)
 			}
-			token = client.Publish(topicPacketLoss, byte(qos), false, packetLoss)
-			token = client.Publish(topicJitter, byte(qos), false, jitter)
+			client.Publish(topicPacketLoss, byte(qos), false, packetLoss)
+			client.Publish(topicJitter, byte(qos), false, jitter)
 			color.Green("Information was successfully sent to the MQTT topic: %s", topic)
 			fmt.Println()
 			// Sending Log
 			lss := readLog(log)
 			for ls := range lss {
-				token = client.Publish(topicLog, byte(qos), false, lss[ls])
+				client.Publish(topicLog, byte(qos), false, lss[ls])
 			}
 			//
 			token.Wait()
@@ -291,7 +282,7 @@ func pingA(mqttOpts *MQTT.ClientOptions, ipAddresses []string, n int, mqtt strin
 		}
 		// After Ping Results
 		// Write to Log
-		if isConnected == false {
+		if !isConnected {
 			logger.Println(connectionOk)
 			//
 			successColor := color.New(color.FgWhite, color.BgGreen)
@@ -319,7 +310,7 @@ func main() {
 	logger = log.New(f, "", log.LstdFlags)
 
 	// Welcome Message
-	fmt.Println(fmt.Sprintf("%s [v%s]\n%s", appName, appVersion, appLink))
+	fmt.Printf("%s [v%s]\n%s\n", appName, appVersion, appLink)
 	fmt.Println(welcomeMsg)
 	fmt.Println()
 
